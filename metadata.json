@@ -1,0 +1,5 @@
+{
+  "name": "Attack Capital: Advanced AMD",
+  "description": "A secure, scalable web app that dials outbound calls, detects if a human or machine answers, and handles connections accordingly using multiple Answering Machine Detection (AMD) strategies.",
+  "requestFramePermissions": []
+}
