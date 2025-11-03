@@ -1,25 +1,47 @@
+/**
+ * Call Logs API Endpoint
+ * Handles fetching call history
+ */
+
 import { NextResponse } from 'next/server';
-import { fetchCallLogs, createCallLog as createLog } from '@/lib/data';
-import { CallLog } from '@/types';
+import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient();
 
 export async function GET() {
   try {
-    const logs = await fetchCallLogs();
-    return NextResponse.json(logs);
-  } catch (error) {
-    return NextResponse.json({ message: 'Failed to fetch call logs' }, { status: 500 });
-  }
-}
+    const calls = await prisma.call.findMany({
+      orderBy: {
+        createdAt: 'desc',
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            email: true,
+            name: true,
+          },
+        },
+      },
+    });
 
-export async function POST(request: Request) {
-    try {
-        const logData = (await request.json()) as Omit<CallLog, 'id' | 'timestamp'>;
-        if (!logData.phoneNumber || !logData.strategy) {
-            return NextResponse.json({ message: 'Missing required fields' }, { status: 400 });
-        }
-        const newLog = await createLog(logData);
-        return NextResponse.json(newLog, { status: 201 });
-    } catch (error) {
-        return NextResponse.json({ message: 'Failed to create call log' }, { status: 500 });
-    }
+    // Transform to match the expected CallLog format
+    const callLogs = calls.map(call => ({
+      id: call.id,
+      phoneNumber: call.targetNumber,
+      strategy: call.amdStrategy,
+      status: call.status,
+      duration: call.duration || 0,
+      timestamp: call.createdAt.toISOString(),
+      result: call.detectionResult || 'UNKNOWN',
+    }));
+
+    return NextResponse.json(callLogs);
+  } catch (error) {
+    console.error('Error fetching call logs:', error);
+    return NextResponse.json(
+      { message: 'Failed to fetch call logs' }, 
+      { status: 500 }
+    );
+  }
 }

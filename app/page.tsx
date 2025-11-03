@@ -5,10 +5,12 @@ import { useRouter } from 'next/navigation';
 import Header from '@/components/Header';
 import Dialer from '@/components/Dialer';
 import CallHistory from '@/components/CallHistory';
+import StrategyComparison from '@/components/StrategyComparison';
 import { CallLog } from '@/types';
 
 export default function DashboardPage() {
   const [callLogs, setCallLogs] = useState<CallLog[]>([]);
+  const [isAuthenticated, setIsAuthenticated] = useState(true); // For demo, always authenticated
   const router = useRouter();
 
   const fetchLogs = async () => {
@@ -27,10 +29,12 @@ export default function DashboardPage() {
     fetchLogs();
   }, []);
 
-  const handleLogout = async () => {
-    await fetch('/api/auth/logout', { method: 'POST' });
-    router.push('/login');
-    router.refresh();
+  const handleLogout = () => {
+    console.log('Logout clicked - redirecting immediately');
+    // Clear any local state
+    setCallLogs([]);
+    // Immediate redirect to login page
+    window.location.href = '/login';
   };
 
   const handleCallEnded = () => {
@@ -41,12 +45,15 @@ export default function DashboardPage() {
     <div className="min-h-screen">
       <Header onLogout={handleLogout} />
       <main className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-1">
+        <div className="grid grid-cols-1 xl:grid-cols-4 gap-8">
+          <div className="xl:col-span-1">
             <Dialer onCallEnded={handleCallEnded} />
           </div>
-          <div className="lg:col-span-2">
+          <div className="xl:col-span-2">
             <CallHistory initialLogs={callLogs} />
+          </div>
+          <div className="xl:col-span-1">
+            <StrategyComparison />
           </div>
         </div>
       </main>

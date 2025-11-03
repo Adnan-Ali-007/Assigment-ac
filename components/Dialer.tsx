@@ -1,20 +1,31 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { AmdStrategy, CallStatus, DetectionResult, CallLog } from '../types';
-import { AMD_STRATEGIES } from '../constants';
 import { PhoneIcon, CogIcon, UserCircleIcon, VoicemailIcon, ClockIcon } from './Icons';
 
-type CallState = 'idle' | 'dialing' | 'ringing' | 'connected' | 'machine_detected' | 'human_detected' | 'error' | 'ended' | 'busy' | 'no_answer';
+type CallState = 'idle' | 'dialing' | 'ringing' | 'analyzing' | 'connected' | 'machine_detected' | 'human_detected' | 'error' | 'ended' | 'busy' | 'no_answer';
 
 interface DialerProps {
-  onCallEnded: () => void;
+  onCallEnded?: () => void;
+}
+
+interface CallResponse {
+  success: boolean;
+  callId: string;
+  callSid: string;
+  status: string;
+  targetNumber: string;
+  amdStrategy: string;
+  error?: string;
 }
 
 const Dialer: React.FC<DialerProps> = ({ onCallEnded }) => {
   const [phoneNumber, setPhoneNumber] = useState('');
-  const [selectedStrategy, setSelectedStrategy] = useState<AmdStrategy>(AmdStrategy.GEMINI_FLASH);
+  const [selectedStrategy, setSelectedStrategy] = useState('twilio-native');
   const [callState, setCallState] = useState<CallState>('idle');
+  const [demoMode, setDemoMode] = useState(true);
   const [callDuration, setCallDuration] = useState(0);
-  const [currentCallStateForLog, setCurrentCallStateForLog] = useState<CallState>('idle');
+  const [currentCallId, setCurrentCallId] = useState<string | null>(null);
+  const [currentCallSid, setCurrentCallSid] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const isCalling = callState !== 'idle' && callState !== 'ended' && callState !== 'error';
 
@@ -30,77 +41,149 @@ const Dialer: React.FC<DialerProps> = ({ onCallEnded }) => {
     };
   }, [callState]);
 
-  const handleEndCall = useCallback(async (finalStatusString: string = 'completed') => {
-    const statusMap: { [key: string]: CallStatus } = {
-        'completed': CallStatus.COMPLETED,
-        'busy': CallStatus.BUSY,
-        'no_answer': CallStatus.NO_ANSWER,
-        'failed': CallStatus.FAILED,
-    };
-
-    const determineResult = (): DetectionResult => {
-        if (currentCallStateForLog === 'human_detected' || currentCallStateForLog === 'connected') return DetectionResult.HUMAN;
-        if (currentCallStateForLog === 'machine_detected') return DetectionResult.MACHINE;
-        return DetectionResult.UNKNOWN;
-    };
-
-    const newLogData: Omit<CallLog, 'id' | 'timestamp'> = {
-        phoneNumber,
-        strategy: selectedStrategy,
-        status: statusMap[finalStatusString] || CallStatus.FAILED,
-        duration: callDuration,
-        result: determineResult(),
-    };
-
-    try {
-        const response = await fetch('/api/calls', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(newLogData),
+  const handleEndCall = useCallback(async () => {
+    if (currentCallId) {
+      try {
+        // Optionally hang up the call via API
+        await fetch(`/api/calls/${currentCallId}/hangup`, {
+          method: 'POST',
         });
-        if (!response.ok) {
-            throw new Error('Failed to save call log');
-        }
-        onCallEnded();
-    } catch (error) {
-        console.error("Failed to save call log:", error);
+      } catch (error) {
+        console.error('Error hanging up call:', error);
+      }
     }
 
     setCallState('ended');
+    setCurrentCallId(null);
+    setCurrentCallSid(null);
+    setCallDuration(0);
+    
     setTimeout(() => {
-        setCallState('idle');
+      setCallState('idle');
     }, 1000);
-  }, [phoneNumber, selectedStrategy, callDuration, currentCallStateForLog, onCallEnded]);
 
-  const handleDial = (e: React.FormEvent) => {
+    if (onCallEnded) {
+      onCallEnded();
+    }
+  }, [currentCallId, onCallEnded]);
+
+  const handleDial = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!phoneNumber || isCalling) return;
 
     setCallState('dialing');
-    setCurrentCallStateForLog('dialing');
     setCallDuration(0);
+    setError(null);
 
-    setTimeout(() => { setCallState('ringing'); setCurrentCallStateForLog('ringing'); }, 1500);
+    try {
+      // For demo purposes, using a mock user ID
+      // In a real app, this would come from authentication
+      const userId = 'demo-user-123';
 
-    setTimeout(() => {
-      const outcome = Math.random();
-      if (outcome < 0.6) {
-        setCallState('human_detected'); setCurrentCallStateForLog('human_detected');
-        setTimeout(() => { setCallState('connected'); setCurrentCallStateForLog('connected'); }, 1000);
-      } else if (outcome < 0.9) {
-        setCallState('machine_detected'); setCurrentCallStateForLog('machine_detected');
-        setTimeout(() => handleEndCall('completed'), 2000);
-      } else if (outcome < 0.95) {
-        setCallState('busy'); setCurrentCallStateForLog('busy');
-         setTimeout(() => handleEndCall('busy'), 2000);
-      } else {
-        setCallState('no_answer'); setCurrentCallStateForLog('no_answer');
-        setTimeout(() => handleEndCall('no_answer'), 2000);
+      const endpoint = demoMode ? '/api/calls/demo-initiate' : '/api/calls/initiate';
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          targetNumber: phoneNumber,
+          amdStrategy: selectedStrategy,
+          userId: userId,
+        }),
+      });
+
+      const data: CallResponse = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to initiate call');
       }
-    }, 4000);
+
+      setCurrentCallId(data.callId);
+      setCurrentCallSid(data.callSid);
+      setCallState('ringing');
+
+      // Start polling for call status updates
+      pollCallStatus(data.callId);
+
+    } catch (error) {
+      console.error('Error initiating call:', error);
+      setError(error instanceof Error ? error.message : 'Failed to initiate call');
+      setCallState('error');
+      
+      setTimeout(() => {
+        setCallState('idle');
+        setError(null);
+      }, 3000);
+    }
   };
+
+  // Poll for call status updates
+  const pollCallStatus = useCallback(async (callId: string) => {
+    const maxPolls = 60; // Poll for up to 60 seconds
+    let pollCount = 0;
+
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/calls/${callId}/status`);
+        const data = await response.json();
+
+        if (response.ok && data.call) {
+          const { status, detectionResult } = data.call;
+
+          switch (status) {
+            case 'RINGING':
+              setCallState('ringing');
+              break;
+            case 'ANSWERED':
+              setCallState('analyzing');
+              break;
+            case 'ANALYZING':
+              setCallState('analyzing');
+              break;
+            case 'COMPLETED':
+              if (detectionResult === 'HUMAN') {
+                setCallState('human_detected');
+                setTimeout(() => setCallState('connected'), 1000);
+              } else if (detectionResult === 'MACHINE') {
+                setCallState('machine_detected');
+                setTimeout(() => handleEndCall(), 2000);
+              } else {
+                setCallState('ended');
+              }
+              return; // Stop polling
+            case 'FAILED':
+              setCallState('error');
+              setTimeout(() => setCallState('idle'), 3000);
+              return; // Stop polling
+            case 'BUSY':
+              setCallState('busy');
+              setTimeout(() => setCallState('idle'), 3000);
+              return; // Stop polling
+            case 'NO_ANSWER':
+              setCallState('no_answer');
+              setTimeout(() => setCallState('idle'), 3000);
+              return; // Stop polling
+          }
+        }
+
+        pollCount++;
+        if (pollCount < maxPolls) {
+          setTimeout(poll, 1000); // Poll every second
+        } else {
+          // Timeout
+          setCallState('error');
+          setTimeout(() => setCallState('idle'), 3000);
+        }
+      } catch (error) {
+        console.error('Error polling call status:', error);
+        setCallState('error');
+        setTimeout(() => setCallState('idle'), 3000);
+      }
+    };
+
+    poll();
+  }, [handleEndCall]);
 
   const formatDuration = (seconds: number) => {
     const mins = Math.floor(seconds / 60).toString().padStart(2, '0');
@@ -109,37 +192,51 @@ const Dialer: React.FC<DialerProps> = ({ onCallEnded }) => {
   };
 
   const StatusDisplay = () => {
-    let icon, text, color;
+    let icon: React.ReactNode, text: string, color: string;
+    
     switch (callState) {
         case 'dialing':
             text = 'Dialing...';
-            color = 'text-brand-yellow';
+            color = 'text-yellow-400';
             icon = <svg className="animate-spin h-6 w-6 mr-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>;
             break;
         case 'ringing':
             text = 'Ringing...';
-            color = 'text-brand-blue';
+            color = 'text-blue-400';
             icon = <PhoneIcon className="animate-pulse h-6 w-6 mr-3" />;
+            break;
+        case 'analyzing':
+            text = 'Analyzing Audio...';
+            color = 'text-purple-400';
+            icon = <CogIcon className="animate-spin h-6 w-6 mr-3" />;
             break;
         case 'human_detected':
              text = 'Human Detected';
-             color = 'text-brand-green';
+             color = 'text-green-400';
              icon = <UserCircleIcon className="h-6 w-6 mr-3" />;
              break;
         case 'connected':
             text = `Connected: ${formatDuration(callDuration)}`;
-            color = 'text-brand-green';
+            color = 'text-green-400';
             icon = <ClockIcon className="h-6 w-6 mr-3" />;
             break;
         case 'machine_detected':
-            text = 'Voicemail Detected';
-            color = 'text-brand-red';
+            text = 'Voicemail Detected - Hanging Up';
+            color = 'text-red-400';
             icon = <VoicemailIcon className="h-6 w-6 mr-3" />;
             break;
         case 'busy':
+            text = 'Line Busy';
+            color = 'text-red-500';
+            icon = <PhoneIcon className="h-6 w-6 mr-3" />;
+            break;
         case 'no_answer':
+            text = 'No Answer';
+            color = 'text-red-500';
+            icon = <PhoneIcon className="h-6 w-6 mr-3" />;
+            break;
         case 'error':
-             text = callState === 'busy' ? 'Line Busy' : callState === 'no_answer' ? 'No Answer' : 'Call Failed';
+             text = error || 'Call Failed';
              color = 'text-red-500';
              icon = <PhoneIcon className="h-6 w-6 mr-3" />;
              break;
@@ -191,30 +288,44 @@ const Dialer: React.FC<DialerProps> = ({ onCallEnded }) => {
                <select
                 id="amd-strategy"
                 value={selectedStrategy}
-                onChange={(e) => setSelectedStrategy(e.target.value as AmdStrategy)}
+                onChange={(e) => setSelectedStrategy(e.target.value)}
                 disabled={isCalling}
-                className="w-full appearance-none pl-10 pr-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-gray-200 focus:outline-none focus:ring-2 focus:ring-brand-blue disabled:opacity-50"
+                className="w-full appearance-none pl-10 pr-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
               >
-                {AMD_STRATEGIES.map((strategy) => (
-                  <option key={strategy.value} value={strategy.value}>{strategy.label}</option>
-                ))}
+                <option value="twilio-native">Twilio Native AMD</option>
+                <option value="jambonz-sip">Jambonz SIP-Enhanced</option>
+                <option value="huggingface-ml">Hugging Face ML Model</option>
+                <option value="gemini-flash">Gemini Flash Real-Time</option>
               </select>
             </div>
+          </div>
+          <div className="flex items-center">
+            <input
+              id="demo-mode"
+              type="checkbox"
+              checked={demoMode}
+              onChange={(e) => setDemoMode(e.target.checked)}
+              disabled={isCalling}
+              className="h-4 w-4 text-brand-blue focus:ring-brand-blue border-gray-600 rounded bg-gray-700"
+            />
+            <label htmlFor="demo-mode" className="ml-2 block text-sm text-gray-400">
+              Demo Mode (simulated calls)
+            </label>
           </div>
         </div>
         <div className="mt-6">
             {isCalling ? (
                  <button
                     type="button"
-                    onClick={() => handleEndCall('completed')}
-                    className="w-full bg-brand-red hover:bg-red-600 text-white font-bold py-3 px-4 rounded-md transition duration-300 ease-in-out flex items-center justify-center"
+                    onClick={handleEndCall}
+                    className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-md transition duration-300 ease-in-out flex items-center justify-center"
                  >
                     <PhoneIcon className="h-5 w-5 mr-2" /> End Call
                 </button>
             ) : (
                 <button
                     type="submit"
-                    className="w-full bg-brand-green hover:bg-green-600 text-white font-bold py-3 px-4 rounded-md transition duration-300 ease-in-out flex items-center justify-center disabled:bg-green-800 disabled:cursor-not-allowed"
+                    className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-md transition duration-300 ease-in-out flex items-center justify-center disabled:bg-green-800 disabled:cursor-not-allowed"
                     disabled={!phoneNumber}
                 >
                     <PhoneIcon className="h-5 w-5 mr-2" /> Dial Now
